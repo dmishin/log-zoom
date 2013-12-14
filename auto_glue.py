@@ -18,8 +18,8 @@ def make_alpha(fragment_size, alpha_gradient_size, margins=(0,0,0,0)):
     fwidth, fheight = fragment_size
     if margins != (0,0,0,0):
         mtop, mbottom, mleft, mright = margins
-        alpha = Image.new("L", fragment_size,0)
-        alpha.paste( make_alpha( (fwidth+mleft+mright, fheight+mbottom+mtop), alpha_gradient_size, (0,0,0,0)),
+        alpha = Image.new("L", fragment_size, 0)
+        alpha.paste( make_alpha( (fwidth-mleft-mright, fheight-mbottom-mtop), alpha_gradient_size, (0,0,0,0)),
                      (mleft, mtop))
         return alpha
         
@@ -90,7 +90,8 @@ def download_and_glue(coordinates,
                       map_type="roadmap", 
                       mercator_to_ortho=True, 
                       mesh_step=8,
-                      scale=2):
+                      scale=2,
+                      margins=(0,0,0,0)):
 
 
     #Increasing zoom by one level offsets image by this amount in the logarithmic view
@@ -99,7 +100,7 @@ def download_and_glue(coordinates,
     fragment_size_scaled = tuple(s*scale for s in fragment_size)
 
     #Prepare alpha
-    alpha = make_alpha(fragment_size_scaled, alpha_gradient_size, (0,0,0,0))
+    alpha = make_alpha(fragment_size_scaled, alpha_gradient_size, margins)
 
     z0, z1 = zoom_range
     out_height = int(zoom_level_offset * (z1-z0+1))
@@ -109,6 +110,7 @@ def download_and_glue(coordinates,
     for zoom in range(z0,z1+1):
         print ("Downloading fragment, zoom={zoom}... ".format(**locals()), end='', flush=True)
         fragment = get_map_cached(coordinates, zoom, fragment_size, map_type, scale)
+        fragment.putalpha(alpha)
         print ("done, downloaded size: {fragment.size}".format(**locals()))
 
         if not mercator_to_ortho:
@@ -185,6 +187,8 @@ if __name__=="__main__":
                       help="Size of the mesh in the output image, used to interpolate distortion. Default is 8.")
     parser.add_option("", "--cache-folder", dest="cache_folder",  metavar="FOLDER",
                       help="Path to the folder, used to store downloaded dataa. Useful to limit traffic use, if you are playing with settings.")
+    parser.add_option("", "--bottom-margin", dest="bottom_margin", type=int, default=0, metavar="PIXELS",
+                      help="Welll... Guess.")
 
     (options, args) = parser.parse_args()
     
@@ -217,7 +221,8 @@ if __name__=="__main__":
             os.makedirs(cache_folder)
 
     img = download_and_glue( coordinates, zoom_range=(z0,z1),map_type=map_type,out_width=options.out_width, mesh_step=options.mesh_step,
-                             fragment_size=(options.fragment_size,options.fragment_size))
+                             fragment_size=(options.fragment_size,options.fragment_size),
+                             margins=(0,options.bottom_margin,0,0))
     if output is None:
         img.show()
     else:
