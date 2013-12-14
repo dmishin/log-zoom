@@ -7,6 +7,9 @@ from mercator2ortho import mercator2ortho
 from math import *
 import shutil
 from io import BytesIO
+import os
+
+cache_folder=None
 
 def make_alpha(fragment_size, alpha_gradient_size, margins=(0,0,0,0)):
     """Create a monochrome image, white inside and fading to black at the sides gradually
@@ -50,6 +53,35 @@ def make_alpha(fragment_size, alpha_gradient_size, margins=(0,0,0,0)):
             alpha_pix[x,y] = k
     return alpha
 
+def get_map_cached(coordinates, zoom, fragment_size, map_type, scale):
+    global cache_folder
+    if cache_folder is None:
+        return get_map_at(coordinates, zoom, fragment_size, map_type, scale)
+    
+    lat, lon = coordinates
+    width, height = fragment_size
+    map_name = "map-{lat:0.10f}-{lon:0.10f}-{zoom}-{width}-{height}-{map_type}-{scale}.png".format(**locals())
+        
+    map_path = os.path.join(cache_folder, map_name)
+    if os.path.exists(map_path):
+        print("Using cached data")
+        with open(map_path, "rb") as map_file:
+            return Image.open(map_file).convert("RGBA")
+    else:
+        print("Cache miss")
+        stream = get_map_stream(coordinates, zoom, fragment_size, map_type, "PNG", scale=scale)
+        data = stream.read()
+        stream.close()
+        with open(map_path, "wb") as map_file:
+            map_file.write(data)
+        return Image.open(BytesIO(data)).convert("RGBA")
+    
+def get_map_at(coordinates, zoom, fragment_size, map_type, scale):
+    stream = get_map_stream(coordinates, zoom, fragment_size, map_type, "PNG", scale=scale)
+    fragment = Image.open(BytesIO(stream.read())).convert("RGBA")
+    stream.close()
+    return fragment
+    
 def download_and_glue(coordinates,
                       zoom_range=(0,19), 
                       fragment_size=(512,512), 
@@ -57,32 +89,27 @@ def download_and_glue(coordinates,
                       alpha_gradient_size=10, 
                       map_type="roadmap", 
                       mercator_to_ortho=True, 
-                      mesh_step=8):
+                      mesh_step=8,
+                      scale=2):
+
 
     #Increasing zoom by one level offsets image by this amount in the logarithmic view
     zoom_level_offset = (0.5*log(2)/pi)*out_width
-    scale = 2
 
     fragment_size_scaled = tuple(s*scale for s in fragment_size)
 
     #Prepare alpha
-    alpha = make_alpha(fragment_size_scaled, alpha_gradient_size, (0,20,0,0))
+    alpha = make_alpha(fragment_size_scaled, alpha_gradient_size, (0,0,0,0))
 
     z0, z1 = zoom_range
-    out_height = int(zoom_level_offset * (z1-z0+2))
+    out_height = int(zoom_level_offset * (z1-z0+1))
     print ("Output image size: {out_width}x{out_height}".format(**locals()))
     out_image = Image.new("RGBA",(out_width, out_height))
     dy_base = None
     for zoom in range(z0,z1+1):
-        stream = get_map_stream(coordinates, zoom, fragment_size, map_type, "PNG", scale=scale)
-        tempbuffer = BytesIO(stream.read())
-        print("   Read data from internet.")
-        fragment = Image.open(tempbuffer).convert("RGBA")
-
-        if zoom != z0:
-            fragment.putalpha(alpha)
-
-        print ("Downloaded fragment, zoom={zoom}, size: {0}".format(fragment.size,**locals()))
+        print ("Downloading fragment, zoom={zoom}... ".format(**locals()), end='', flush=True)
+        fragment = get_map_cached(coordinates, zoom, fragment_size, map_type, scale)
+        print ("done, downloaded size: {fragment.size}".format(**locals()))
 
         if not mercator_to_ortho:
             dy = (zoom-z0) * zoom_level_offset
@@ -107,19 +134,23 @@ def download_and_glue(coordinates,
             )
 
             if dy_base is None:
-                dy_base = (0.5*log(ortho_pix_size)/pi)*out_width
+                dy_base = (0.5/pi*log(ortho_pix_size))*out_width
                 dy = 0
             else:
-                dy = dy_base - (0.5*log(ortho_pix_size)/pi)*out_width
+                dy = dy_base - (0.5/pi*log(ortho_pix_size))*out_width
             tfm = compose( merc2otrho_tfm, log_tfm )
 
 
         transformed_size = (out_width, int(zoom_level_offset*3))
         
         #Put transformed image to the output
+        print("    Transforming fragment...", end='', flush=True)
+        transformed=transform_image(fragment, tfm, transformed_size, mesh_step=mesh_step)
+        print("Done, created {transformed.size} image.".format(**locals()))
         paste_with_alpha(out_image, 
-                         transform_image(fragment, tfm, transformed_size, mesh_step=mesh_step),
+                         transformed,
                          (0, int(dy)))
+        print ("Done")
     return out_image
 
 def paste_with_alpha(bg, img, offset):
@@ -141,14 +172,19 @@ if __name__=="__main__":
     
     parser.add_option("-t", "--map-type", dest="map_type", default="satellite",
                       help="Type of the map. satellite/roadmap")
+    parser.add_option("", "--fragment-size", dest="fragment_size", type=int, default=512,
+                      metavar="PIXELS",
+                      help="Size of the square fragment to download. Not more than 640.")
     parser.add_option("", "--alpha-gradient-size", type=int, default=10,
                       help="Size of the alpha gradient for glueing pieces")
-    parser.add_option("-p", "--projection", dest="projection", default="orthogonal",
-                      help="Projection type. Default is orthogonal. mercator is possible")
+    #parser.add_option("-p", "--projection", dest="projection", default="orthogonal",
+    #                  help="Projection type. Default is orthogonal. mercator is possible")
     parser.add_option("-w", "--width", dest="out_width", type=int, default=2048, metavar="PIXELS",
                       help="Width of the output image. Default is 2048.")
     parser.add_option("", "--mesh-step", dest="mesh_step", type=int, default=8, metavar="PIXELS",
                       help="Size of the mesh in the output image, used to interpolate distortion. Default is 8.")
+    parser.add_option("", "--cache-folder", dest="cache_folder",  metavar="FOLDER",
+                      help="Path to the folder, used to store downloaded dataa. Useful to limit traffic use, if you are playing with settings.")
 
     (options, args) = parser.parse_args()
     
@@ -173,7 +209,15 @@ if __name__=="__main__":
     map_type = options.map_type.lower()
     if not is_supported_map_type(map_type): parser.error("Bad map type: {0}".format(map_type))
 
-    img = download_and_glue( coordinates, zoom_range=(z0,z1),map_type=map_type,out_width=options.out_width, mesh_step=options.mesh_step)
+    if options.cache_folder is not None:
+        cache_folder = options.cache_folder
+        print ("Using cache {0}".format(cache_folder))
+        if not os.path.exists( cache_folder ):
+            print ("Cache path {0} does not exists. Creating it.".format(cache_folder))
+            os.makedirs(cache_folder)
+
+    img = download_and_glue( coordinates, zoom_range=(z0,z1),map_type=map_type,out_width=options.out_width, mesh_step=options.mesh_step,
+                             fragment_size=(options.fragment_size,options.fragment_size))
     if output is None:
         img.show()
     else:
