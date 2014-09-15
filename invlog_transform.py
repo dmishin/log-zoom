@@ -18,7 +18,7 @@ def inv_logpolar_transform(image_size, y0, out_width, out_height, alpha0 = 0):
     
     #source image scale (pixels per unit)
     # image width must be 2PI units
-    source_scale = swidth/2/pi
+    source_scale = (swidth-1)/2/pi
     
     
     
@@ -31,7 +31,7 @@ def inv_logpolar_transform(image_size, y0, out_width, out_height, alpha0 = 0):
         
     tfm_func1 = compose(
         #without translate, min y is: -log_rmax*source_scale. It must be y0.
-        translate_tfm( source_scale*pi, log_rmax*source_scale-y0 ),
+        translate_tfm( source_scale*pi, log_rmax*source_scale+y0 ),
         scale_tfm( source_scale, -source_scale ),
         logz,
         translate_tfm(-xc, -yc)
